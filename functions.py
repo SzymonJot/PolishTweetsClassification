@@ -3,7 +3,8 @@ import torch
 from transformers import *
 import spacy
 import numpy as np
-import pandas as np
+import pandas as pd
+from sklearn.metrics import f1_score, accuracy_score, confusion_matrix, ConfusionMatrixDisplay, classification_report
 nlp = spacy.load("pl_core_news_lg")
 
 EMOJI_TO_POLISH = {
