@@ -1,3 +1,12 @@
 TrainingData/
 data_cleaning_and_info.ipynb
 PolishTweetsClassifcation - grid search.ipynb
+.venv
+Archive
+/results/*
+/preprocessing_comparison/*
+/errors/*
+/CachedProcessing/*
+all_runs_metrics.csv
+dataset2_analyzed.csv
+*.pyc
