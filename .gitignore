@@ -10,3 +10,4 @@ Archive
 all_runs_metrics.csv
 dataset2_analyzed.csv
 *.pyc
+__pycache__/

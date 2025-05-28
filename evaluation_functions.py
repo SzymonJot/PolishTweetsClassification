@@ -6,6 +6,8 @@ import pandas as pd
 from datetime import datetime
 import csv
 import os
+import scipy
+import torch
 from datasets import Dataset, DatasetDict
 
 class MasterCSVLoggerCallback(TrainerCallback):
@@ -104,7 +106,7 @@ def apply_transformations(df, transformations, name):
             
     return processed_df
 
-def transform_data(processing_pipelines,dataset = dataset_labeled, csv_dir='TrainingData/')->dict:
+def transform_data(processing_pipelines,dataset: pd.DataFrame, csv_dir='TrainingData/')->dict:
     """
     Transforms the dataset using the specified processing pipelines and saves the results to CSV files.
     Args:
