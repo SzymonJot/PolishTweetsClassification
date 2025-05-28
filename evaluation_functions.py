@@ -144,8 +144,8 @@ def train_and_evaluate(key, tokenized_dataset, base_model_name, train_test_seed,
         weight_decay=0.01,
         learning_rate=2e-5,
         evaluation_strategy="epoch",
-        save_strategy="epoch",
-        load_best_model_at_end=True,
+        save_strategy="no",
+        load_best_model_at_end=False,
         metric_for_best_model="f1_macro", 
         greater_is_better=True,
         seed=model_seed,
@@ -154,7 +154,7 @@ def train_and_evaluate(key, tokenized_dataset, base_model_name, train_test_seed,
         logging_steps=25,
         gradient_accumulation_steps=2,
         max_grad_norm=15.0,
-        save_total_limit=1,  # Keep only last 1 checkpoints
+        save_total_limit=0,  # Keep only last 1 checkpoints
         group_by_length=True,
     )
 

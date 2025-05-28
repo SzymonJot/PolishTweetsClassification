@@ -1,7 +1,7 @@
 import re
 from sklearn.utils import resample
 import torch
-from transformers import *
+from transformers import AutoTokenizer
 import spacy
 import numpy as np
 import pandas as pd
