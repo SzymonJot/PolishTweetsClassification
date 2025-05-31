@@ -1,0 +1,2 @@
+train_seed,model_seed,accuracy,macro_f1,weighted_f1,neutral_f1,positive_f1,negative_f1,model,dataset
+12,12,0.7135802469135802,0.6463095670406463,0.7085767487745795,0.6265403650335635,0.7952981695710031,0.5170901665173723,sdadas/polish-roberta-base-v2,Basic_processing_spelling_lem

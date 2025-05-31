@@ -129,14 +129,14 @@ def transform_data(processing_pipelines,dataset: pd.DataFrame, csv_dir='Training
             datasets[name] = processed_df
     return datasets
 
-def train_and_evaluate(key, tokenized_dataset, base_model_name, train_test_seed, model_seed):
+def train_and_evaluate(strategy_name,tokenized_dataset, base_model_name, train_test_seed, model_seed):
 
     # Reload model for each run to reset weights
     model = AutoModelForSequenceClassification.from_pretrained(base_model_name, num_labels=3)
     
     # Training arguments
     training_args = TrainingArguments(
-        output_dir=f"./results/results_{key}_{base_model_name}_{train_test_seed}",
+        output_dir=f"./results/results_{strategy_name}_{base_model_name}_{train_test_seed}",
         num_train_epochs=3,
         per_device_train_batch_size=8,  
         per_device_eval_batch_size=32,
@@ -165,44 +165,141 @@ def train_and_evaluate(key, tokenized_dataset, base_model_name, train_test_seed,
         train_dataset=tokenized_dataset["train"],
         eval_dataset=tokenized_dataset["test"],
         compute_metrics=compute_metrics,
-        callbacks=[MasterCSVLoggerCallback(run_id=f'{key}_{base_model_name}_{train_test_seed}')]
+        callbacks=[MasterCSVLoggerCallback(run_id=f'{strategy_name}_{base_model_name}_{train_test_seed}')]
     )
 
 
     # Train and evaluate
     trainer.train()
     eval_results = trainer.evaluate()
-    
     return eval_results, trainer
 
-def run_evaluation(tokenized_datasets: dict, model:str, train_test_seed:int, model_seed:int = 12) -> None:
+
+
+class WeightedTrainer(Trainer):
+    def __init__(self, class_weights, label_smoothing=0.1, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.class_weights = class_weights
+        self.label_smoothing = label_smoothing
+
+    def compute_loss(self, model, inputs, return_outputs=False, **kwargs):
+        labels = inputs.get("labels")
+        outputs = model(**inputs)
+        logits = outputs.logits
+        
+        if labels is not None:
+            # Use label smoothing + class weights
+            loss_fct = torch.nn.CrossEntropyLoss(
+                weight=self.class_weights.to(model.device),
+                label_smoothing=self.label_smoothing
+            )
+            loss = loss_fct(
+                logits.view(-1, model.config.num_labels), 
+                labels.view(-1)
+            )
+        else:
+            loss = outputs.loss
+            
+        return (loss, outputs) if return_outputs else loss
+    
+# Calculating class weights
+def get_class_weights(labels, floor=1.0):
+    """Robust weight calculation with missing class handling"""
+    valid_classes = [0, 1, 2]
+    label_counts = {cls: max(np.sum(labels == cls), 1) for cls in valid_classes}
+    total_samples = sum(label_counts.values())
+    
+    weights = {
+        cls: max(total_samples / (len(valid_classes) * count), floor)
+        for cls, count in label_counts.items()
+    }
+    return torch.tensor([weights[cls] for cls in valid_classes], dtype=torch.float32)
+
+def train_evaluate_grid(params, tokenized_dataset, model_name):
+    # Get and validate labels
+    train_labels = np.array(tokenized_dataset["train"]["labels"])
+    
+    # Class weight calculation with floor
+    class_weights = get_class_weights(train_labels, floor=params.get("class_weight_floor", 1.0))
+
+    # Model initialization
+    model = AutoModelForSequenceClassification.from_pretrained(
+        model_name, 
+        num_labels=3
+    )
+   
+    # Training arguments with imbalance optimizations
+    args = TrainingArguments(
+        output_dir=f"./grid_results/{hash(str(params))}",
+        num_train_epochs=params["epochs"],
+        per_device_train_batch_size=params["batch_size"],
+        per_device_eval_batch_size=32,
+        learning_rate=params["learning_rate"],
+        weight_decay=params["weight_decay"],
+        warmup_ratio=0.1,  
+        evaluation_strategy="epoch",
+        save_strategy="no",
+        load_best_model_at_end=False,
+        metric_for_best_model="f1_macro",
+        greater_is_better=True,
+        seed=params['seed'],
+        optim="adamw_torch",
+        fp16=torch.cuda.is_available(),
+        gradient_accumulation_steps=params.get("grad_accum_steps", 2),
+        report_to="none",
+        logging_steps=50,
+        lr_scheduler_type="cosine"  
+    )
+
+    # Initialize trainer
+    trainer = WeightedTrainer(
+        class_weights=class_weights,
+        model=model,
+        args=args,
+        train_dataset=tokenized_dataset["train"],
+        eval_dataset=tokenized_dataset["test"],
+        compute_metrics=compute_metrics,
+    )
+
+    # Train with validation checks
+    try:
+        trainer.train()
+        eval_results = trainer.evaluate()
+        return {
+            **params,
+            "accuracy": eval_results["eval_accuracy"],
+            "macro_f1": eval_results["eval_f1_macro"],
+            "weighted_f1": eval_results["eval_f1_weighted"],
+            "neutral_f1": eval_results["eval_f1_0"],
+            "positive_f1": eval_results["eval_f1_1"],
+            "negative_f1": eval_results["eval_f1_2"],
+        }
+    except Exception as e:
+        print(f"Training failed: {str(e)}")
+        return None
+    
+def run_evaluation(tokenized_dataset: dict, params: dict,model:str, strategy_name:str) -> None:
     results = []
+    try:
+   
+        print(f"\n{'='*40}")
+        print(f"Testing preprocessing variant: {strategy_name}")
+        print(f"{'='*40}")
+        print(f'Training model: {model}')
+        eval_results,trainer = train_and_evaluate(strategy_name, tokenized_dataset,model,train_test_seed = params['train_seed'], model_seed = params['model_seed'])
+        get_misclassified(trainer,tokenized_dataset=tokenized_dataset,model_name=model,train_test_seed=params['train_seed'],preprocessing=strategy_name)
+        print(results)
 
-    for key, tokenized_dataset in tokenized_datasets.items():
-        try:
-            print(f"\n{'='*40}")
-            print(f"Testing preprocessing variant: {key}")
-            print(f"{'='*40}")
-            print(f'Training model: {model}')
-            metrics, trainer = train_and_evaluate(key, tokenized_dataset,model,train_test_seed, model_seed = model_seed)
-            get_misclassified(trainer,tokenized_dataset=tokenized_dataset,model_name=model,train_test_seed=train_test_seed,preprocessing=key)
+    except Exception as e:
+        print(f"Error with variant {strategy_name}: {str(e)}")
 
-            results.append({
-                "model":model,
-                "preprocessing": key,
-                "accuracy": metrics["eval_accuracy"],
-                "macro_f1": metrics["eval_f1_macro"],
-                "weighted_f1": metrics["eval_f1_weighted"],
-                "neutral_f1": metrics["eval_f1_0"],
-                "positive_f1": metrics["eval_f1_1"],
-                "negative_f1": metrics["eval_f1_2"],
-                "epochs": metrics["epoch"]
-            })
-
-            print(results)
-
-        except Exception as e:
-            print(f"Error with variant {key}: {str(e)}")
-
-    return results
+    return {
+            **params,
+            "accuracy": eval_results["eval_accuracy"],
+            "macro_f1": eval_results["eval_f1_macro"],
+            "weighted_f1": eval_results["eval_f1_weighted"],
+            "neutral_f1": eval_results["eval_f1_0"],
+            "positive_f1": eval_results["eval_f1_1"],
+            "negative_f1": eval_results["eval_f1_2"],
+        }
 
