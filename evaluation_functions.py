@@ -9,6 +9,8 @@ import os
 import scipy
 import torch
 from datasets import Dataset, DatasetDict
+from sklearn.model_selection import StratifiedKFold
+from functions import tokenize_datasets, aggregate_metrics
 
 class MasterCSVLoggerCallback(TrainerCallback):
     def __init__(self, master_file_path="all_runs_metrics.csv", run_id=None):
@@ -242,13 +244,14 @@ def train_evaluate_grid(params, tokenized_dataset, model_name):
         load_best_model_at_end=False,
         metric_for_best_model="f1_macro",
         greater_is_better=True,
-        seed=params['seed'],
+        seed=params['model_seed'],
         optim="adamw_torch",
         fp16=torch.cuda.is_available(),
         gradient_accumulation_steps=params.get("grad_accum_steps", 2),
         report_to="none",
         logging_steps=50,
-        lr_scheduler_type="cosine"  
+        lr_scheduler_type="cosine",
+         
     )
 
     # Initialize trainer
@@ -259,6 +262,7 @@ def train_evaluate_grid(params, tokenized_dataset, model_name):
         train_dataset=tokenized_dataset["train"],
         eval_dataset=tokenized_dataset["test"],
         compute_metrics=compute_metrics,
+        callbacks=[MasterCSVLoggerCallback(run_id=f'{model_name}_{"_".join(map(str, params.values()))}')], 
     )
 
     # Train with validation checks
@@ -303,3 +307,33 @@ def run_evaluation(tokenized_dataset: dict, params: dict,model:str, strategy_nam
             "negative_f1": eval_results["eval_f1_2"],
         }
 
+def cross_val_score(df, params = None, model_name = 'allegro/herbert-base-cased', strategy_name = None):
+    required = ['train_seed', 'model_seed']
+    if any(param not in params for param in required):
+        raise ValueError("Missing required config parameters.")
+    
+    kf = StratifiedKFold(n_splits=5, shuffle=True, random_state=params['train_seed'])
+    all_fold_metrics = []
+
+    for fold_idx, (train_idx, val_idx) in enumerate(kf.split(df['text'], df['labels'])):
+        train_df = df.iloc[train_idx]
+        val_df = df.iloc[val_idx]
+
+        # Tokenize if needed
+        train_df_tokenized = tokenize_datasets(df = train_df, model_name=model_name, max_length=128, column='text')
+        val_df_tokenized = tokenize_datasets(df = val_df, model_name=model_name, max_length=128, column='text')
+
+        dataset_dict = DatasetDict({
+            'train': train_df_tokenized,
+            'test': val_df_tokenized
+        })
+        # Train model and get metrics (e.g., accuracy, F1, etc.)
+        if strategy_name:
+            metrics = run_evaluation(params = params, tokenized_dataset = dataset_dict, model = model_name, strategy_name= strategy_name)
+        else:
+            metrics = train_evaluate_grid(params = params, tokenized_dataset= dataset_dict, model_name = model_name)
+            
+        all_fold_metrics.append(metrics)
+
+    # Return average metrics across folds
+    return aggregate_metrics(all_fold_metrics)

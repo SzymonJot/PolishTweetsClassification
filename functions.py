@@ -10,6 +10,7 @@ import csv
 from EMOJI_TO_POLISH import emoji_to_polish
 from POLISH_STOP_WORDS import polish_stopwords
 from sklearn.model_selection import train_test_split
+import os
 nlp = spacy.load("pl_core_news_lg")
 
 def replace_emoji(text: str) -> str:
@@ -152,4 +153,23 @@ def prepare_datasets(df,model:str, test_size=0.2, random_state=None, max_length=
         })
     
     return dataset_dict
+
+def aggregate_metrics(metrics_list):
+    return {
+        key: np.mean([m[key] for m in metrics_list])
+        for key in metrics_list[0]
+    }
+
+def compile_results(directory):
+    """Compiles and processes results from CSV files in specified directory."""
+    combined_df = pd.DataFrame()
+
+    for filename in os.listdir(directory):
+        if filename.endswith('.csv'):
+            filepath = os.path.join(directory, filename)
+            df = pd.read_csv(filepath)
+            combined_df = pd.concat([combined_df, df], ignore_index=True)
+    combined_df.sort_values(by=['model', 'dataset'], inplace=True)
+
+    return combined_df
 
