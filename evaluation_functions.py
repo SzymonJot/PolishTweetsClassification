@@ -337,3 +337,61 @@ def cross_val_score(df, params = None, model_name = 'allegro/herbert-base-cased'
 
     # Return average metrics across folds
     return aggregate_metrics(all_fold_metrics)
+
+
+def train_evaluate(params, tokenized_dataset, model_name):
+    # Get and validate labels
+    train_labels = np.array(tokenized_dataset["train"]["labels"])
+    
+    # Class weight calculation with floor
+    class_weights = get_class_weights(train_labels, floor=params.get("class_weight_floor", 1.0))
+
+    # Model initialization
+    model = AutoModelForSequenceClassification.from_pretrained(
+        model_name, 
+        num_labels=3
+    )
+   
+    # Training arguments with imbalance optimizations
+    args = TrainingArguments(
+        output_dir=f"./trained/{hash(str(params))}",
+        num_train_epochs=params["epochs"],
+        per_device_train_batch_size=params["batch_size"],
+        per_device_eval_batch_size=32,
+        learning_rate=params["learning_rate"],
+        weight_decay=params["weight_decay"],
+        warmup_ratio=0.1,  
+        evaluation_strategy="epoch",
+        save_strategy="epoch",
+        load_best_model_at_end=False,
+        metric_for_best_model="f1_weighted",
+        greater_is_better=True,
+        seed=params['model_seed'],
+        optim="adamw_torch",
+        fp16=torch.cuda.is_available(),
+        gradient_accumulation_steps=params.get("grad_accum_steps", 2),
+        report_to="none",
+        logging_steps=50,
+        lr_scheduler_type="cosine",
+         
+    )
+
+    # Initialize trainer
+    trainer = WeightedTrainer(
+        class_weights=class_weights,
+        model=model,
+        args=args,
+        train_dataset=tokenized_dataset["train"],
+        eval_dataset=tokenized_dataset["test"],
+        compute_metrics=compute_metrics,
+        callbacks=[MasterCSVLoggerCallback(run_id=f'{model_name}_{"_".join(map(str, params.values()))}')], 
+    )
+
+    # Train with validation checks
+    try:
+        trainer.train()
+        eval_results = trainer.evaluate()
+        return trainer, eval_results
+    except Exception as e:
+        print(f"Training failed: {str(e)}")
+        return None

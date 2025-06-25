@@ -11,3 +11,9 @@ all_runs_metrics.csv
 dataset2_analyzed.csv
 *.pyc
 __pycache__/
+grid_search_comparison/
+myenv/
+trained/
+/strategy_comparison/*
+progress.txt
+*.png
