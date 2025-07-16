@@ -1,0 +1,3 @@
+[submodule "external/Nonlincausality"]
+	path = external/Nonlincausality
+	url = https://github.com/mrosol/Nonlincausality.git

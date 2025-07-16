@@ -395,3 +395,206 @@ def train_evaluate(params, tokenized_dataset, model_name):
     except Exception as e:
         print(f"Training failed: {str(e)}")
         return None
+
+import pandas as pd
+import statsmodels.api as sm
+from statsmodels.stats.diagnostic import acorr_ljungbox, het_arch
+from scipy.stats import f
+
+# Initialize results dictionary
+granger_results = {}
+maxlag = 5  # Maximum lag order to test
+
+for company in stationarity_results:
+    # Get company-specific data
+    df_company = companies_data_daily_final_full[companies_data_daily_final_full['company'] == company].copy()
+    stationary_stock = stationary_columns[company]['STOCK']
+    stationary_twitter = stationary_columns[company]['TWITTER']
+    
+    granger_results[company] = {}
+    
+    for stock_var in stationary_stock:
+        granger_results[company][stock_var] = {}
+        
+        for twitter_var in stationary_twitter:
+            # Initialize storage for lag-specific results
+            lag_results = {}
+            
+            # Create base dataset with required variables
+            base_data = df_company[[stock_var, twitter_var]].copy().dropna()
+            
+            # Generate lagged variables up to maxlag
+            for lag in range(1, maxlag + 1):
+                base_data[f"{stock_var}_lag_{lag}"] = base_data[stock_var].shift(lag)
+                base_data[f"{twitter_var}_lag_{lag}"] = base_data[twitter_var].shift(lag)
+            
+            # Test each lag order
+            for p in range(1, maxlag + 1):
+                # Prepare required columns
+                required_cols = [stock_var]
+                stock_lags = [f"{stock_var}_lag_{i}" for i in range(1, p + 1)]
+                twitter_lags = [f"{twitter_var}_lag_{i}" for i in range(1, p + 1)]
+                
+                # Select data and drop NAs
+                test_data = base_data[required_cols + stock_lags + twitter_lags].dropna()
+                n_obs = len(test_data)
+                
+                # Check sufficient data
+                if n_obs < 2 * p + 5:  # Ensure enough observations
+                    continue
+                
+                # Prepare variables
+                y = test_data[stock_var]
+                X_restricted = test_data[stock_lags]
+                X_unrestricted = test_data[stock_lags + twitter_lags]
+                
+                # Add constants
+                X_restricted = sm.add_constant(X_restricted)
+                X_unrestricted = sm.add_constant(X_unrestricted)
+                
+                try:
+                    # Fit models
+                    model_restricted = sm.OLS(y, X_restricted).fit()
+                    model_unrestricted = sm.OLS(y, X_unrestricted).fit()
+                    
+                    # Calculate F-test for Granger causality
+                    rss_r = model_restricted.ssr
+                    rss_ur = model_unrestricted.ssr
+                    n = n_obs
+                    k = len(twitter_lags)  # Number of additional parameters
+                    dfd = n - X_unrestricted.shape[1]  # Denominator degrees of freedom
+                    
+                    if dfd <= 0:
+                        continue
+                    
+                    F_stat = ((rss_r - rss_ur) / k) / (rss_ur / dfd)
+                    p_value = f.sf(F_stat, k, dfd)  # Survival function (1 - cdf)
+                    
+                    # Residual diagnostics
+                    def run_diagnostics(residuals, n_obs):
+                        """Run autocorrelation and heteroskedasticity tests"""
+                        diag = {}
+                        
+                        # Autocorrelation test (Ljung-Box)
+                        lb_lags = min(10, n_obs - 1)  # Adjust based on available data
+                        if lb_lags > 0:
+                            lb_test = acorr_ljungbox(residuals, lags=[lb_lags], return_df=True)
+                            lb_pvalue = lb_test['lb_pvalue'].iloc[0]
+                            diag['autocorrelated'] = lb_pvalue < 0.05
+                        else:
+                            diag['autocorrelated'] = None
+                        
+                        # Heteroskedasticity test (ARCH)
+                        arch_lags = min(10, n_obs - 1)
+                        if arch_lags > 0:
+                            arch_test = het_arch(residuals)
+                            arch_pvalue = arch_test[1]
+                            diag['heteroskedastic'] = arch_pvalue < 0.05
+                        else:
+                            diag['heteroskedastic'] = None
+                            
+                        return diag
+                    
+                    # Run diagnostics for both models
+                    diag_restricted = run_diagnostics(model_restricted.resid, n_obs)
+                    diag_unrestricted = run_diagnostics(model_unrestricted.resid, n_obs)
+                    
+                    # Store lag-specific results
+                    lag_results[p] = {
+                        'granger_p': p_value,
+                        'restricted_model': {
+                            'residuals': model_restricted.resid.values,
+                            'diagnostics': diag_restricted
+                        },
+                        'unrestricted_model': {
+                            'residuals': model_unrestricted.resid.values,
+                            'diagnostics': diag_unrestricted
+                        }
+                    }
+                    
+                except Exception as e:
+                    continue  # Skip numerical errors
+            
+            # Store results for this stock-twitter pair
+            granger_results[company][stock_var][twitter_var] = lag_results
+
+# Output results (optional)
+# granger_results
+
+
+for company, results in stationarity_results.items():
+    granger_results[company] = {}
+    
+    # Get company-specific data
+    df_company = companies_data_daily_final_full[companies_data_daily_final_full['company'] == company].copy()
+    
+    stationary_stock = stationary_columns[company]['STOCK']
+    stationary_twitter = stationary_columns[company]['TWITTER']
+
+    for stock_var in stationary_stock:
+        granger_results[company][stock_var] = {}
+        
+        for twitter_var in stationary_twitter:
+            significant_lags = {}
+            
+            # Create base dataset with current values
+            base_cols = [stock_var] + [f"{twitter_var}_lag_{i}" for i in range(1, maxlag+1)]
+            if not all(col in df_company.columns for col in base_cols):
+                continue
+                
+            data = df_company[base_cols].copy()
+            
+            # Generate stock lags dynamically
+            for lag in range(1, maxlag+1):
+                data[f"{stock_var}_lag_{lag}"] = data[stock_var].shift(lag)
+            
+            # Test each lag order
+            for p in range(1, maxlag+1):
+                # Prepare required columns
+                required_cols = [stock_var]
+                stock_lags = [f"{stock_var}_lag_{i}" for i in range(1, p+1)]
+                twitter_lags = [f"{twitter_var}_lag_{i}" for i in range(1, p+1)]
+                
+                # Skip if insufficient data
+                test_data = data[required_cols + stock_lags + twitter_lags].dropna()
+                n_obs = len(test_data)
+                if n_obs < 2*p + 5:  # Ensure sufficient observations
+                    continue
+                
+                # Prepare variables
+                y = test_data[stock_var]
+                X_restricted = test_data[stock_lags]
+                X_unrestricted = test_data[stock_lags + twitter_lags]
+                
+                # Add constants
+                X_restricted = sm.add_constant(X_restricted)
+                X_unrestricted = sm.add_constant(X_unrestricted)
+                
+                try:
+                    # Fit models
+                    model_restricted = sm.OLS(y, X_restricted).fit()
+                    model_unrestricted = sm.OLS(y, X_unrestricted).fit()
+                    
+                    # Calculate F-test
+                    rss_r = model_restricted.ssr
+                    rss_ur = model_unrestricted.ssr
+                    n = n_obs
+                    k = len(twitter_lags)  # Extra parameters
+                    dfd = n - X_unrestricted.shape[1]  # Denominator DF
+                    
+                    if dfd <= 0:
+                        continue
+                    
+                    F_stat = ((rss_r - rss_ur) / k) / (rss_ur / dfd)
+                    p_value = 1 - f.cdf(F_stat, k, dfd)
+                    
+                    # Store significant results
+
+                    significant_lags[p] = p_value
+          
+                except Exception as e:
+                    continue  # Skip numerical errors
+            
+            # Store if significant lags found
+            granger_results[company][stock_var][twitter_var] = {'significant_lagssignificant_lags': significant_lags}
+granger_results
