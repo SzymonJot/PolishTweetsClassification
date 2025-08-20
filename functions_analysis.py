@@ -6,6 +6,10 @@ from statsmodels.stats.outliers_influence import variance_inflation_factor
 import numpy as np
 from itertools import combinations
 from sklearn.preprocessing import StandardScaler
+import seaborn as sns
+import matplotlib.pyplot as plt
+import math
+import locale
 
 def fit_regressions(df, stock_columns, tweet_columns):
     results = []
@@ -375,3 +379,125 @@ def simple_train_valid_test_split_standardized(data, train_ratio=0.7, valid_rati
     test_scaled = pd.DataFrame(scaler.transform(test[numeric_cols]), index=test.index, columns=numeric_cols)
     
     return train_scaled, valid_scaled, test_scaled, scaler
+
+
+def plot_company_heatmaps(
+    df: pd.DataFrame,
+    companies=None,
+    company: str = None,
+    column_labels_pl: dict = None,
+    full_mode: bool = True,                  # if True -> drop rows/cols with no significant entries
+    sig_col: str = "Permutation_Significant",
+    value_col: str = "Lag",
+    nrows: int = None,
+    ncols: int = 2,
+    figsize: tuple = (13, 20),
+    cmap: str = "crest"
+):
+    """
+    Plot per-company heatmaps of counts of significant relationships.
+    full_mode=True  -> Only show rows/cols that have at least one significant cell.
+    full_mode=False -> Show all variables for the company (missing counts filled with 0).
+    """
+
+    # Decide which companies to plot
+    if company is not None:
+        companies = [company]
+    elif companies is None:
+        companies = df["Company"].unique()
+
+    # Safety
+    df = df.copy()
+    if column_labels_pl is None:
+        column_labels_pl = {}
+
+    # Label replacements
+    df['Zmienne Objaśniana'] = df['Target Variable'].replace(column_labels_pl)
+    df['Zmienne Objaśniające'] = df['Source Feature'].replace(column_labels_pl)
+
+    total = len(companies)
+
+    # --- Figure / axes setup ---
+    if total == 1:
+        fig, ax = plt.subplots(figsize=(7, 6))  # single plot, balanced size
+        axes = [ax]
+    else:
+        if nrows is None:
+            nrows = math.ceil(total / ncols)
+        fig, axes = plt.subplots(nrows=nrows, ncols=ncols, figsize=figsize)
+        axes = np.atleast_1d(axes).ravel()
+
+    pivot_tables = []
+    max_val = 0
+
+    # Build pivot tables
+    for comp in companies:
+        company_data = df[df['Company'] == comp]
+
+        # significant-only subset for counting
+        sig_mask = company_data[sig_col].astype(bool) if sig_col in company_data.columns else False
+        filtered = company_data[sig_mask]
+
+        # Build pivot of counts of significant "Lag" occurrences
+        pivot_table = filtered.pivot_table(
+            index="Zmienne Objaśniana",
+            columns="Zmienne Objaśniające",
+            values=value_col,
+            aggfunc="count",
+            fill_value=0
+        )
+
+        if not full_mode:
+            # In non-full mode, show the full grid even if no sig:
+            row_labels = sorted(company_data['Zmienne Objaśniana'].dropna().unique(), key=locale.strxfrm)
+            col_labels = sorted(company_data['Zmienne Objaśniające'].dropna().unique(), key=locale.strxfrm)
+            if len(row_labels) == 0: row_labels = ["-"]
+            if len(col_labels) == 0: col_labels = ["-"]
+            pivot_table = pivot_table.reindex(index=row_labels, columns=col_labels, fill_value=0)
+        else:
+            # In full mode, DROP rows/cols that have no significant cells
+            if pivot_table.empty:
+                # Nothing significant at all -> minimal placeholder so heatmap can render
+                pivot_table = pd.DataFrame([[0]], index=["—"], columns=["—"])
+
+        pivot_tables.append(pivot_table)
+
+        # Track global max for consistent color scale (ignore the placeholder 0x0 case)
+        if pivot_table.size > 0:
+            max_val = max(max_val, int(np.nanmax(pivot_table.values)))
+
+    if max_val == 0:
+        max_val = 1
+
+    # Plot
+    for i, comp in enumerate(companies):
+        ax = axes[i]
+        sns.heatmap(
+            pivot_tables[i],
+            annot=True,
+            fmt="d",
+            cmap=cmap,
+            linewidths=0.1,
+            linecolor="white",
+            vmin=0,
+            vmax=max_val,
+            cbar=False,
+            ax=ax,
+            annot_kws={"fontsize": 12, "weight": "bold"}
+        )
+        ax.set_title(comp, fontsize=14, fontweight="bold")
+        ax.set_xticklabels(ax.get_xticklabels(), rotation=45, ha="right", fontsize=9, fontweight="bold")
+        ax.set_yticklabels(ax.get_yticklabels(), rotation=0, ha="right", fontsize=9, fontweight="bold")
+        ax.set_xlabel("")
+        ax.set_ylabel("")
+        ax.tick_params(axis='x', pad=4)  # give a bit more breathing room
+
+    # Hide unused axes if multi-grid
+    if total > 1:
+        for j in range(len(companies), len(axes)):
+            axes[j].axis("off")
+
+    plt.tight_layout()
+    plt.show()
+
+    return pivot_tables
